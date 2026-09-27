@@ -29,6 +29,10 @@
 7. **跨沙箱可用**：只读文件系统，不依赖 git、不依赖子进程、不联网。git 不可用时改从 `.git/HEAD` 与 refs 读分支/HEAD，并提示你自行补改动清单。
 8. **可自动化**：`--json` 输出结构化结果；`--exit-code` 让 warn→10、critical→20，便于包进脚本或未来的 hook。
 9. **自检式报错**：找不到会话、Node 缺 zstd 支持、参数写错，都会给出明确中文提示与退出码 2，而不是抛出难懂的堆栈。
+10. **交接自检（`--verify`）**：机械校验交接文档——FILL 是否补完、章节是否齐全、**每条决策能否在其载体文件里 grep 到**、链指针是否可解析、§7/§9 是否为空。退出码 0/1，可当流水线门禁。
+11. **链式接力**：文档头带 `chain` / `hop` / `previous`，交接目录里维护 `LATEST` 稳定指针；协议要求"只在缺信息时按指针回读，不通读全链"。
+12. **跨 agent 导出（`--portable`）**：生成环境无关的 `HANDOFF.md`（剥掉 DSH 专属路径与命令），可直接交给 Claude Code / Codex / Cursor。
+13. **确定性 hook（可选）**：`hooks/` 提供 SessionStart（注入占用 + 最新交接指针）与 UserPromptSubmit（仅新越线时提醒）；任何异常都静默退出 0，绝不打断会话。默认未挂载 hook 桥，需改组合配置。
 
 ---
 
@@ -347,28 +351,165 @@ node "$base\scripts\context-usage.mjs" --session no-such-session
 
 ---
 
+### 示例 9：交接自检（`--verify`）
+
+**输入**
+
+```powershell
+node "<base>\scripts\handoff.mjs" --verify --doc "<交接文档路径>"
+```
+
+**通过时（退出码 0）**
+
+```text
+交接文档自检: <交接文档路径>
+
+  PASS  没有遗留 FILL 占位                ok
+  PASS  11 个章节齐全                    ok
+  PASS  §10 有可复制的开场白代码块          ok
+  PASS  决策落盘表已填写                    2 条
+  PASS  决策 #1「表面类型集合是测量的唯一入口」  已在 scripts/lib/measure.mjs 中 grep 到
+  PASS  交接链上一棒可解析                   → .agents/handoff/…-hop1.md
+  PASS  §7 有可执行步骤                   3 条
+  PASS  §9 有验证命令                    ok
+
+结论: 通过（可以把这个开场白交给新会话）
+```
+
+**不通过时（退出码 1，逐条指出问题）**
+
+```text
+  FAIL  没有遗留 FILL 占位                     仍有 6 处 <!-- FILL … --> 未补
+  FAIL  决策 #1「（示例行，交付前删掉）表面类型集合…」  仍是模板示例行，请替换成真实决策
+  FAIL  §7 有可执行步骤                        没有编号步骤
+  FAIL  §9 有验证命令                         内容为空
+结论: 不通过（4 项失败；补完再跑一次）
+```
+
+### 示例 10：跨 agent 交接包（`--portable`）
+
+**输入**
+
+```powershell
+node "<base>\scripts\handoff.mjs" --portable
+```
+
+**输出**
+
+```text
+跨 agent 交接包已写入: <工作区>\HANDOFF.md
+交接链: chain session-cfe3d2b4-… 第 1 棒（链首）
+（事实段已自动填好；判断段仍带 <!-- FILL -->，补完后用 --verify --doc 该文件 自检）
+
+把下面这段交给目标 agent（Claude Code / Codex / Cursor 均可）:
+----------8<----------
+读 HANDOFF.md，接着上一个会话的工作：上下文阈值提醒与会话交接技能
+先看 §1 目标、§7 下一步、§8 环境事实，然后从 §7 第 1 条开始动手。
+§3/§5 里已完成的工作不要重做；§6 里失败过的做法不要重复；完成后按 §9 的验证命令自检。
+需要更早的来龙去脉时，按文件头部 `previous` 指针沿交接链回读，不要通读全链。
+----------8<----------
+```
+
+生成的文件与 DSH 版结构一致，但已换成中性措辞——实测这三处在交接包里**消失**，便于别的 agent 阅读：
+
+```text
+「- DSH home:」   0 次
+「- 会话日志:」    0 次
+DSH 专属自查命令行  已被替换为「若目标环境装了 context-guard 技能…否则忽略本行」
+```
+
+## 六、进阶能力
+
+### 6.1 交接自检 `--verify`
+
+会话给自己的交接打分一定会及格，**grep 不会**。补完 `<!-- FILL -->` 后必须自检：
+
+```powershell
+node "<base>\scripts\handoff.mjs" --verify --doc "<交接文档路径>"
+```
+
+检查项（全机械，说服不了）：FILL 是否补完 / 11 节是否齐全 / §10 开场白是否以 `/context-guard` 开头 /
+**§4 决策表每条能否在「载体文件」里 grep 到「证据」** / 链指针 `previous` 是否可解析 / §7 是否有编号步骤 / §9 是否有内容。
+退出码 0 通过、1 不通过、2 用法错误；`--json` 给机器读。
+
+§4 的表格格式（模板里预置了一行带「示例」字样的占位行，**自检会专门拒绝它**）：
+
+```markdown
+| 决策 | 载体文件 | 可 grep 的证据 |
+| --- | --- | --- |
+| 表面类型集合是测量的唯一入口 | scripts/lib/measure.mjs | `export const SURFACE_TYPES` |
+```
+
+### 6.2 链式接力
+
+文档头写入位置信息：
+
+```yaml
+chain: session-cfe3d2b4-…     # 同一条链的稳定 id
+hop: 2                        # 第几棒
+previous: .agents/handoff/2026-…-cfe3d2b4.md
+```
+
+在同一目录再跑一次 `handoff.mjs` 会自动继承 chain、hop+1、填好 previous，并刷新 `LATEST` 指针。
+协议要求：**只在真的缺信息时按 `previous` 回读**，不要通读全链——通读全链等于把省下的上下文又烧回去。
+
+### 6.3 跨 agent 交接 `--portable`
+
+```powershell
+node "<base>\scripts\handoff.mjs" --portable     # 默认写 <工作区>/HANDOFF.md
+```
+
+剥掉 DSH 专属内容（`DSH home`、会话日志路径、自查命令），换成中性说明与任何 agent 都能照做的开场白；
+`--portable` 是对当前状态的**导出**，不占交接链的新一棒。
+
+### 6.4 确定性 hook（需改组合配置）
+
+`hooks/dsh-context-guard-hook.mjs` 一个脚本服务两个事件，实测行为：
+
+| 场景 | 行为 |
+| --- | --- |
+| `SessionStart` | 注入「当前占用 + 最新交接文档指针 + 续接须知」 |
+| `UserPromptSubmit` 未越线 | 完全静默（实测输出 0 字符） |
+| `UserPromptSubmit` 新越线 | 注入 `⚠` / `🛑` 提醒块 |
+| 空 payload / 未知事件 / 坏 JSON | 安静退出 0，不影响会话 |
+
+启用：把 `@deepseek-ai/dsh-hooks-claude-code` 挂进组合并指向 `hooks/hooks.example.json`（片段见 `hooks/cordis-snippet.yml`），然后重启 DSH。
+**默认未挂载**，此时技能仍按协议 A 的自觉检查工作。
+
+### 6.5 命名说明
+
+GitHub 上已有同名项目（[`Michel-Johnson/Context-Guard-Skill`](https://github.com/Michel-Johnson/Context-Guard-Skill) 是"把项目当工作台"的多会话协作层），另有 `context-guardian-skill` 等近似命名。
+因此**仓库名用 `dsh-context-guard`**，而**技能名仍是 `context-guard`**：触发词 `/context-guard` 与安装目录名都不变。
+
 ## 附录 A：文件清单
 
 ```text
-context-guard/                     ← 本文件夹即完整技能包
-├── SKILL.md                       技能协议（模型加载的指令：节奏、阈值、交接与续接、token 纪律）
+dsh-context-guard/                 ← 本文件夹即完整技能包（技能名仍是 context-guard）
+├── SKILL.md                       技能协议（模型加载的指令：节奏、阈值、交接与续接、自检、token 纪律）
 ├── config.json                    默认配置（warnAt 0.7 / criticalAt 0.9 / windowFallback 128000 …）
-├── README.zh.md                   本文件（面向使用者）
+├── README.md                      项目入口（GitHub 首页）
+├── README.zh.md                   本文件（完整文档）
+├── hooks/                         可选：确定性注入（默认未挂载 hook 桥）
+│   ├── dsh-context-guard-hook.mjs SessionStart / UserPromptSubmit 共用一个脚本
+│   ├── hooks.example.json         hooks 桥配置示例
+│   └── cordis-snippet.yml         挂进 DSH 组合的片段
 └── scripts/
     ├── context-usage.mjs          测量 + 阈值判断 + 状态去重（CLI）
-    ├── handoff.mjs                交接文档生成 + 开场白（CLI）
+    ├── handoff.mjs                交接文档 / 自检 / 跨 agent 导出（CLI）
     └── lib/
         ├── cli.mjs                参数解析（唯一参数声明源，未知参数直接报错）
         ├── session-log.mjs        多帧 zstd 会话日志解析、会话定位、路径编码
-        └── measure.mjs            配置四层合并、日志折叠、占用测量、阈值换算
+        ├── measure.mjs            配置四层合并、日志折叠、占用测量、阈值换算
+        └── verify.mjs             交接文档的机械自检（FILL / 章节 / 决策 grep / 链指针）
 ```
 
-运行时会额外产生两类文件（都不在技能目录内）：
+运行时会额外产生三类文件（都不在技能目录内）：
 
 | 文件 | 位置 | 作用 |
 | --- | --- | --- |
 | 提醒状态 | `$DSH_HOME/storages/context-guard/<工作区键>-<会话id>.json` | 记录上次等级，避免同一等级重复提醒 |
 | 交接文档 | `<工作区>/.agents/handoff/<时间>-<会话id前8位>.md` | 可改到别处（配置 `handoffDir` 或 `--handoff-dir`） |
+| 稳定指针 | 交接目录里的 `LATEST`（无扩展名） | 指向最新一棒，供 hook 与新会话直接定位 |
 
 ## 附录 B：配置项
 
@@ -411,3 +552,5 @@ context-guard/                     ← 本文件夹即完整技能包
 - 启发式对 CJK 与 JSON 结构仍是近似；只有带用量锚点时才是精确值。
 - 「提醒」由模型按协议在每回合开头执行；若要做到完全不依赖模型自觉，需要 DSH 的 `dsh-hooks-claude-code` hook 桥（当前 Web 组合未挂载，需改组合配置才能启用）。
 - 交接文档的质量取决于模型补写的 `<!-- FILL -->` 段；事实段（§2 §5 §8）是自动采集的，可直接采信。
+- `--verify` 只校验**机械可验证**的部分（FILL、章节、决策能否 grep 到、链指针）；它判断不了"这个下一步是否明智"——那仍是你和模型的事。
+- hook 脚本已随附并自测通过，但**默认不生效**（DSH 组合未挂载 hook 桥）；未挂载时提醒仍依赖模型按协议自觉执行。

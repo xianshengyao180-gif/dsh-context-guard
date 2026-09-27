@@ -16,20 +16,25 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { UsageError, parseFlags } from './lib/cli.mjs';
-import { measureContext, messageText } from './lib/measure.mjs';
+import { loadConfig, measureContext, messageText } from './lib/measure.mjs';
 import { readSessionLog } from './lib/session-log.mjs';
+import { formatReport, parseFrontMatter, verifyHandoffDoc } from './lib/verify.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(HERE, '..');
 const CHECK_SCRIPT = path.join(SKILL_DIR, 'scripts', 'context-usage.mjs');
+const SELF = fileURLToPath(import.meta.url);
 
-const USAGE = `context-guard — 生成会话交接文档与新会话开场白
+const USAGE = `context-guard — 生成会话交接文档、自检它，并导出给任意 agent
 
 用法:
-  node handoff.mjs [选项]
+  node handoff.mjs [选项]                 写交接文档（默认 <工作区>/.agents/handoff/<时间>-<会话>.md）
+  node handoff.mjs --verify [--doc <path>] 机械自检交接文档（补完 FILL 后必须跑）
+  node handoff.mjs --portable             写跨 agent 的 HANDOFF.md（默认 <工作区>/HANDOFF.md）
 
 选项:
-  --out <path>             交接文档输出路径（默认为 <工作区>/.agents/handoff/<时间>-<会话>.md）
+  --out <path>             输出路径（默认见上；--portable 时默认为 <工作区>/HANDOFF.md）
+  --doc <path>             --verify 要校验的文档（默认取交接目录里最新的一份）
   --title <text>           文档标题（默认取会话标题）
   --cwd <dir>              工作区目录（默认当前目录）
   --session <id>           会话 id（默认取 $DSH_SESSION_ID）
@@ -39,11 +44,11 @@ const USAGE = `context-guard — 生成会话交接文档与新会话开场白
   --warn <n>               测量用的提醒阈值（影响文档里的上下文读数）
   --critical <n>           测量用的临界阈值
   --window <n>             上下文窗口 token 数
-  --stdout                 把文档打到标准输出，不写文件
-  --json                   以 JSON 输出采集到的事实（不写文件）
+  --stdout                 把内容打到标准输出，不写文件
+  --json                   以 JSON 输出（--verify 时为自检结果，否则为采集到的事实）
   --help                   显示本帮助
 
-退出码: 0 成功；用法或读取错误 2。
+退出码: 0 成功 / 自检通过；1 自检不通过；2 用法或读取错误。
 `;
 
 function truncate(text, max) {
@@ -203,9 +208,21 @@ function collectFacts(events) {
   };
 }
 
-function renderDoc({ measurement, facts, git, title, opener, generatedAt }) {
+function renderDoc({ measurement, facts, git, title, opener, generatedAt, chain }) {
   const lines = [];
   const pct = measurement.percent;
+  const link = chain ?? { id: measurement.sessionId ?? 'chain', hop: 1, previous: null };
+  lines.push('---');
+  lines.push('kind: context-guard-handoff');
+  lines.push(`chain: ${link.id}`);
+  lines.push(`hop: ${link.hop}`);
+  lines.push(`previous: ${link.previous ?? '(none)'}`);
+  lines.push(`created: ${generatedAt}`);
+  lines.push(`title: ${title}`);
+  lines.push(`session: ${measurement.sessionId ?? ''}`);
+  lines.push(`cwd: ${measurement.cwd ?? ''}`);
+  lines.push('---');
+  lines.push('');
   lines.push('<!-- context-guard handoff — 新会话先读这份文档，再动手 -->');
   lines.push(`# 交接：${title}`);
   lines.push('');
@@ -217,6 +234,7 @@ function renderDoc({ measurement, facts, git, title, opener, generatedAt }) {
   lines.push(`| 模型 | ${measurement.provider ?? '?'} / ${measurement.model ?? '?'} |`);
   lines.push(`| 交接时上下文 | ${pct}%（${measurement.pressureTokens} / ${measurement.window} tokens，窗口来源 ${measurement.windowSource}） |`);
   lines.push(`| 会话规模 | ${measurement.turns} 回合 / ${measurement.steps} 步 |`);
+  lines.push(`| 交接链 | chain \`${link.id}\` 第 ${link.hop} 棒${link.previous ? `，上一棒 \`${link.previous}\`` : '（链首）'} |`);
   lines.push('');
 
   lines.push('## 0. 新会话怎么用这份文档');
@@ -224,6 +242,9 @@ function renderDoc({ measurement, facts, git, title, opener, generatedAt }) {
   lines.push('2. 需要补读的文件按 §5 的清单读，不要重新全仓勘察。');
   lines.push('3. 从 §7「下一步」第 1 条开始，按顺序推进；§3/§5 已完成的工作不要重做。');
   lines.push('4. §6 列出的失败尝试不要重复；完成后用 §9 的命令自检。');
+  if (link.previous) {
+    lines.push(`5. 本棒是链条第 ${link.hop} 棒，上一棒在 \`${link.previous}\`：只有当 §2/§4/§6 里确实找不到某项来龙去脉时，才回读它并沿 \`previous\` 继续往前，**不要默认全链通读**（那是白烧上下文）。`);
+  }
   lines.push('');
 
   lines.push('## 1. 目标与验收标准');
@@ -272,6 +293,12 @@ function renderDoc({ measurement, facts, git, title, opener, generatedAt }) {
 
   lines.push('## 4. 关键决策与约束');
   lines.push('<!-- FILL: 已定下的技术选型、命名、目录约定、不可违反的边界；每条写“决定了什么 + 为什么”。新会话不应再重新讨论这些。 -->');
+  lines.push('');
+  lines.push('每条决策都要落到一个真实文件里，并给出一段**确实存在于该文件**的原文作为证据——`--verify` 会逐条去 grep，grep 不到就报 FAIL：');
+  lines.push('');
+  lines.push('| 决策 | 载体文件 | 可 grep 的证据 |');
+  lines.push('| --- | --- | --- |');
+  lines.push('| （示例行，交付前删掉）表面类型集合是测量的唯一入口 | scripts/lib/measure.mjs | `export const SURFACE_TYPES` |');
   lines.push('');
 
   lines.push('## 5. 产物与文件（自动采集）');
@@ -352,13 +379,98 @@ function buildOpener({ measurement, docPath, title }) {
   ].join('\n');
 }
 
+/** Newest handoff document in a directory (by front-matter `created`, then mtime). */
+function newestDocIn(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
+  } catch {
+    return null;
+  }
+  const docs = [];
+  for (const name of names) {
+    const file = path.join(dir, name);
+    let created = '';
+    let kind = '';
+    let mtime = 0;
+    try {
+      const data = parseFrontMatter(fs.readFileSync(file, 'utf8')).data;
+      created = data.created ?? '';
+      kind = data.kind ?? '';
+      mtime = fs.statSync(file).mtimeMs;
+    } catch {
+      /* an unreadable doc just sorts first */
+    }
+    // 跨 agent 导出（kind: context-guard-portable）不是交接链的一棒，不参与扫描
+    if (kind && kind !== 'context-guard-handoff') continue;
+    docs.push({ file, created, mtime });
+  }
+  if (!docs.length) return null;
+  docs.sort((a, b) => (a.created || String(a.mtime)).localeCompare(b.created || String(b.mtime)) || a.mtime - b.mtime);
+  return docs[docs.length - 1].file;
+}
+
+/** Where the current chain stands, according to the newest existing document. */
+function scanChain(dir) {
+  const newest = newestDocIn(dir);
+  if (!newest) return null;
+  let data = {};
+  try {
+    data = parseFrontMatter(fs.readFileSync(newest, 'utf8')).data;
+  } catch {
+    data = {};
+  }
+  const hop = Number(data.hop);
+  return { file: newest, chain: data.chain || data.session || null, hop: Number.isFinite(hop) && hop > 0 ? hop : 1 };
+}
+
+/** Agent-neutral opener for a ported brief. */
+function buildPortableOpener({ title, docName }) {
+  return [
+    `读 ${docName}，接着上一个会话的工作：${title}`,
+    '先看 §1 目标、§7 下一步、§8 环境事实，然后从 §7 第 1 条开始动手。',
+    '§3/§5 里已完成的工作不要重做；§6 里失败过的做法不要重复；完成后按 §9 的验证命令自检。',
+    '需要更早的来龙去脉时，按文件头部 `previous` 指针沿交接链回读，不要通读全链。',
+  ].join('\n');
+}
+
+/**
+ * Turn the DSH-flavoured handoff into an agent-neutral brief: the DSH-only
+ * opener and machine-specific environment lines are swapped out, everything
+ * else (facts, decisions, next steps) is carried over verbatim.
+ */
+function toPortable(docText, { openerText, docName }) {
+  const sec0 = docText.indexOf('## 0. ');
+  const sec1 = docText.indexOf('## 1. ');
+  const sec10 = docText.indexOf('## 10. ');
+  const head = sec0 > 0 ? docText.slice(0, sec0) : docText;
+  const middle = sec1 > 0 && sec10 > sec1 ? docText.slice(sec1, sec10) : '';
+  const portable0 = [
+    '## 0. 用法（任意 agent）',
+    '',
+    `1. 本文件是**环境无关**的交接包，适用于 Claude Code / Codex / Cursor / DSH 等任意编码 agent。`,
+    `2. 把它放在仓库根（默认名 \`HANDOFF.md\`），在新会话里直接说：**「读 ${docName}，从 §7 开始」**。`,
+    '3. §2 §5 §8 是上一个会话自动采集的事实；§1 §3 §4 §6 §7 §9 是判断与计划。',
+    '4. §2 的「最近的工具动作」来自上一个 agent 的运行时，命令原文可能带它的专属语法（如 `$env:`、`pwsh`），仅供了解**做了什么**，不必照抄。',
+    '5. 需要追溯更早的决定时，按文件头部 `previous` 指针沿交接链回读。',
+    '',
+    '',
+  ].join('\n');
+  const portable10 = ['## 10. 开场白（复制到目标 agent 的会话）', '', '```text', openerText, '```', ''].join('\n');
+  const cleaned = middle
+    .replace(/^- DSH home:.*\r?\n?/m, '')
+    .replace(/^- 会话日志:.*\r?\n?/m, '')
+    .replace(/^- 上下文自检:.*$/m, '- 上下文自检: 若目标环境装了 context-guard 技能，运行其 `scripts/context-usage.mjs`；否则忽略本行。');
+  return `${head.replace('kind: context-guard-handoff', 'kind: context-guard-portable')}${portable0}${cleaned.trimEnd()}\n\n${portable10}`;
+}
+
 function main() {
   let args;
   try {
     ({ args } = parseFlags(process.argv.slice(2), {
       usage: USAGE,
-      values: ['out', 'title', 'cwd', 'session', 'log', 'dshHome', 'handoffDir', 'warn', 'critical', 'window', 'windowFallback', 'skillDir'],
-      bools: ['stdout', 'json'],
+      values: ['out', 'doc', 'title', 'cwd', 'session', 'log', 'dshHome', 'handoffDir', 'warn', 'critical', 'window', 'windowFallback', 'skillDir'],
+      bools: ['stdout', 'json', 'verify', 'portable'],
     }));
   } catch (error) {
     if (error instanceof UsageError) {
@@ -370,6 +482,31 @@ function main() {
   if (args.help) {
     console.log(USAGE);
     return;
+  }
+
+  // ---- 自检模式：不需要会话，也不需要模型；纯机械校验 ----
+  if (args.verify) {
+    const verifyCwd = args.cwd ? path.resolve(args.cwd) : process.cwd();
+    let target = args.doc ? path.resolve(args.doc) : null;
+    if (!target) {
+      const { config } = loadConfig({ skillDir: args.skillDir ?? SKILL_DIR, cwd: verifyCwd, cli: { handoffDir: args.handoffDir } });
+      const dir = path.isAbsolute(config.handoffDir) ? config.handoffDir : path.join(verifyCwd, config.handoffDir);
+      target = newestDocIn(dir);
+    }
+    if (!target) {
+      console.error('context-guard: 找不到要自检的交接文档；用 --doc <path> 指定。');
+      process.exit(2);
+    }
+    let result;
+    try {
+      result = verifyHandoffDoc(target, { cwd: verifyCwd });
+    } catch (error) {
+      console.error(`context-guard: 无法读取 ${target}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
+    if (args.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(formatReport(result));
+    process.exit(result.ok ? 0 : 1);
   }
 
   const cwd = args.cwd ? path.resolve(args.cwd) : process.cwd();
@@ -399,7 +536,29 @@ function main() {
   const handoffDir = path.isAbsolute(measurement.config.handoffDir)
     ? measurement.config.handoffDir
     : path.join(measurement.cwd ?? cwd, measurement.config.handoffDir);
-  const docPath = args.out ? path.resolve(args.out) : path.join(handoffDir, `${stamp}-${shortId}.md`);
+  const docPath = args.portable
+    ? args.out
+      ? path.resolve(args.out)
+      : path.join(measurement.cwd ?? cwd, 'HANDOFF.md')
+    : args.out
+      ? path.resolve(args.out)
+      : path.join(handoffDir, `${stamp}-${shortId}.md`);
+
+  // 交接链：默认跟随交接目录里最新的一份；用了 --out 就跟随那份所在目录。
+  // --portable 是对当前状态的**导出**，不占新的一棒。
+  const chainDir = args.portable ? handoffDir : path.dirname(docPath);
+  const previousDoc = scanChain(chainDir);
+  const chain = args.portable
+    ? {
+        id: previousDoc?.chain ?? measurement.sessionId ?? 'chain',
+        hop: previousDoc?.hop ?? 1,
+        previous: previousDoc ? path.relative(measurement.cwd ?? cwd, previousDoc.file).replace(/\\/g, '/') : null,
+      }
+    : {
+        id: previousDoc?.chain ?? measurement.sessionId ?? 'chain',
+        hop: (previousDoc?.hop ?? 0) + 1,
+        previous: previousDoc ? path.relative(measurement.cwd ?? cwd, previousDoc.file).replace(/\\/g, '/') : null,
+      };
 
   const opener = buildOpener({ measurement, docPath, title });
 
@@ -438,7 +597,35 @@ function main() {
     return;
   }
 
-  const doc = renderDoc({ measurement, facts, git, title, opener, generatedAt });
+  const doc = renderDoc({ measurement, facts, git, title, opener, generatedAt, chain });
+
+  // ---- 跨 agent 交接包 ----
+  if (args.portable) {
+    const docName = path.basename(docPath);
+    const portableOpener = buildPortableOpener({ title, docName });
+    const portable = toPortable(doc, { openerText: portableOpener, docName });
+    if (args.stdout) {
+      process.stdout.write(portable);
+      return;
+    }
+    try {
+      fs.mkdirSync(path.dirname(docPath), { recursive: true });
+      fs.writeFileSync(docPath, portable, 'utf8');
+    } catch (error) {
+      console.error(`context-guard: 无法写入交接包 ${docPath}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
+    console.log(`跨 agent 交接包已写入: ${docPath}`);
+    console.log(`交接链: chain ${chain.id} 第 ${chain.hop} 棒${chain.previous ? `（上一棒 ${chain.previous}）` : '（链首）'}`);
+    console.log('（事实段已自动填好；判断段仍带 <!-- FILL -->，补完后用 --verify --doc 该文件 自检）');
+    console.log('');
+    console.log('把下面这段交给目标 agent（Claude Code / Codex / Cursor 均可）:');
+    console.log('----------8<----------');
+    console.log(portableOpener);
+    console.log('----------8<----------');
+    return;
+  }
+
   if (args.stdout) {
     process.stdout.write(doc);
     return;
@@ -447,13 +634,18 @@ function main() {
   try {
     fs.mkdirSync(path.dirname(docPath), { recursive: true });
     fs.writeFileSync(docPath, doc, 'utf8');
+    // 稳定指针：hook 与新会话据此找到最新一棒（无扩展名，不会被当成文档扫描）
+    fs.writeFileSync(path.join(path.dirname(docPath), 'LATEST'), `${path.basename(docPath)}\n${generatedAt}\n`, 'utf8');
   } catch (error) {
     console.error(`context-guard: 无法写入交接文档 ${docPath}: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(2);
   }
 
   console.log(`交接文档已写入: ${docPath}`);
+  console.log(`交接链: chain ${chain.id} 第 ${chain.hop} 棒${chain.previous ? `（上一棒 ${chain.previous}）` : '（链首）'}`);
   console.log('（自动采集部分已填好；请用 edit/write 补齐 §1 §3 §4 §6 §7 §9 的 FILL 段落）');
+  console.log('补完后必须自检，通过后才把开场白交出去：');
+  console.log(`  node "${SELF}" --verify --doc "${docPath}"`);
   console.log('');
   console.log('把下面这段复制到新会话:');
   console.log('----------8<----------');

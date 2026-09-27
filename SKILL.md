@@ -31,13 +31,16 @@ description: >
 ## 命令
 
 ```powershell
-node "<base>/scripts/context-usage.mjs"          # 一行摘要；越线时附提醒块
-node "<base>/scripts/context-usage.mjs" --json    # 机器可读全量
-node "<base>/scripts/handoff.mjs"                 # 写交接文档并打印新会话开场白
+node "<base>/scripts/context-usage.mjs"                    # 一行摘要；越线时附提醒块
+node "<base>/scripts/context-usage.mjs" --json              # 机器可读全量
+node "<base>/scripts/handoff.mjs"                           # 写交接文档并打印新会话开场白
+node "<base>/scripts/handoff.mjs" --verify --doc <路径>      # 机械自检（补完 FILL 后必须跑）
+node "<base>/scripts/handoff.mjs" --portable                # 导出跨 agent 的 HANDOFF.md
 ```
 
 路径含空格（例如 `C:\my work\...`）时必须加引号。常用参数：
 `--warn 0.6 --critical 0.85 --window 128000`、`--no-state`、`--force`、`--exit-code`（warn→10，critical→20）。
+`--verify` 的退出码：0 通过、1 不通过、2 用法错误——可以用在脚本里当门禁。
 
 ## 阈值自定义（逐层覆盖，后者胜）
 
@@ -67,20 +70,36 @@ node "<base>/scripts/handoff.mjs"                 # 写交接文档并打印新�
 ## 协议 B —— 交接（warn 后就准备，critical 必做）
 
 1. 运行 `node "<base>/scripts/handoff.mjs"`。它会：写交接文档到 `<工作区>/.agents/handoff/<时间>-<会话>.md`，
-   自动填好事实段（最近人/机消息、最近工具动作、待办、交付物、写过的文件、git、环境），并在终端打印“开场白”。
+   自动填好事实段（最近人/机消息、最近工具动作、待办、交付物、写过的文件、git、环境），更新稳定指针
+   `<交接目录>/LATEST`，打印本棒在交接链中的位置（chain / hop / previous），并在终端打印“开场白”。
 2. 用 `read` 读该文档，再用 `edit`/`write` 补齐所有 `<!-- FILL ... -->` 段：
    - §1 目标与验收标准：一句话目标 + “怎样算完成”。
    - §3 已完成/已验证：补上验证方式（命令 + 观察到的结果）。没验证过的不要写进去。
-   - §4 关键决策与约束：决定了什么 + 为什么；新会话不应重新讨论。
+   - §4 关键决策与约束：决定了什么 + 为什么；**并且必须把每条决策填进 §4 的表格**（决策 / 载体文件 / 可 grep 的证据），
+     证据要写一段**确实存在于该文件里**的原文——自检会逐条 grep，grep 不到就是 FAIL。**删掉示例行。**
    - §6 踩过的坑：试过什么 + 失败现象 + 原因（不写这条，新会话会重复烧上下文）。
    - §7 下一步：拆成小步，**第 1 条必须新会话能立刻动手**；完成的待办删掉。
    - §9 验证命令：一键自检命令 + 期望输出。
-3. 回复用户，只给三样东西：
-   - 交接文档路径；
+3. **必须自检，通过后才能把开场白交出去**：
+
+   ```powershell
+   node "<base>/scripts/handoff.mjs" --verify --doc "<交接文档路径>"
+   ```
+
+   退出码 0 = 通过。若 FAIL：按它逐条指出的问题回去补（哪条决策 grep 不到、哪节是空的），补完再跑一次。
+   **不要跳过这一步**——会话给自己的交接打分一定会及格，grep 不会。
+4. 回复用户，只给三样东西：
+   - 交接文档路径（以及它在交接链中的第几棒）；
    - 一段 ```text 代码块，内容是脚本打印的“开场白”（含 `/context-guard` 触发词，新会话会自动加载本协议）；
    - 一句话操作说明：打开新会话 → 粘贴 → 发送。
    **不要把整篇交接文档贴进对话**（那是双倍上下文开销）。
-4. 到临界线后不要开新战线：把手头这一步收尾，然后完成交接。
+5. 到临界线后不要开新战线：把手头这一步收尾，然后完成交接。
+
+## 协议 B2 —— 跨 agent 交接（要把工作交给 Claude Code / Codex / Cursor 时）
+
+同一个工作区里换 agent 时，跑 `node "<base>/scripts/handoff.mjs" --portable`：它会写出**环境无关**的
+`<工作区>/HANDOFF.md`（剥掉 DSH 专属路径与自查命令），并打印一段任何 agent 都能用的开场白。
+把该文件留在仓库根，然后对目标 agent 说「读 HANDOFF.md，从 §7 开始」即可。补完 FILL 后同样用 `--verify --doc HANDOFF.md` 自检。
 
 ## 协议 C —— 在新会话续接（用户粘贴开场白后）
 
@@ -88,7 +107,8 @@ node "<base>/scripts/handoff.mjs"                 # 写交接文档并打印新�
 2. 只读文档点名要补读的文件，**不要重新全仓勘察**。
 3. 从 §7 第 1 条开始按序推进；§3 §5 已完成项不要重做；§6 失败过的做法不要重复。
 4. 若文档与实际不符：先修正文档，再继续（文档是新会话的唯一真相源）。
-5. 续接后的会话同样受协议 A 管辖——接力是循环的。
+5. 需要更早的来龙去脉时，按文档头部 `previous` 指针沿**交接链**回读——只在真的缺信息时回读，不要通读全链。
+6. 续接后的会话同样受协议 A 管辖——接力是循环的。
 
 ## token 纪律
 
@@ -108,8 +128,12 @@ node "<base>/scripts/handoff.mjs"                 # 写交接文档并打印新�
 - 若 `approx` 长期为真且数字明显偏低，说明日志里没有 provider 用量（例如刚开会话），按趋势用它没问题，
   不要因此宣称精确。
 
-## 可选：全自动提醒（未在本机启用）
+## 可选：全自动提醒（hook，需改组合配置）
 
-DSH 具备 Claude-Code 兼容的 hooks 桥（`UserPromptSubmit` 可注入 additionalContext），能在每次提交 prompt
-前自动注入提醒，从而不依赖模型自觉。当前 Web 组合未挂载 `dsh-hooks-claude-code`，启用需要改组合配置；
-做法见同目录 `README.zh.md` 的「进阶」一节。
+`hooks/dsh-context-guard-hook.mjs` 已经写好并自测通过：`SessionStart` 会把「当前占用 + 最新交接文档指针 +
+续接须知」注入新会话，`UserPromptSubmit` 只在**新越线**时注入提醒块，其余情况完全静默，且任何异常都安静退出 0
+（绝不打断会话）。
+
+但它**默认不会生效**：DSH Web 组合没有挂载 Claude-Code 兼容的 hook 桥。启用方式见 `hooks/cordis-snippet.yml`
+（挂 `@deepseek-ai/dsh-hooks-claude-code` 指向 `hooks/hooks.example.json`，然后重启 DSH）。
+没挂载时，技能仍按协议 A 的“自觉检查”工作——两者不冲突。

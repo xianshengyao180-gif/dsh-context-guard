@@ -1,0 +1,19 @@
+# 把 context-guard 的 hook 接进 DSH 组合（示例片段）
+#
+# 现状说明：DSH Web 组合默认**没有**挂载 Claude-Code 兼容的 hook 桥，
+# 也就是说 hooks/hooks.example.json 里的两个事件默认不会触发。
+# 要让"提醒"从"靠模型自觉"变成"确定性注入"，需要：
+#
+#   1) 在组合配置里加上下面这一行（指向你的 hooks.json 或其所在 settings 文件）
+#   2) 重启 DSH —— 组合是启动时读取的，改了要重启才生效
+#   3) 验证：新开会话时应当出现 context-guard 状态块（SessionStart）
+#
+# 该桥的已知限制（摘自 dsh-hooks-claude-code 文档）：
+#   - 只支持命令式（command）handler，且是参考实现的子集
+#   - UserPromptSubmit / SessionStart 支持 JSON 形式的 additionalContext
+#   - 普通 stdout 文本**不会**被当作上下文注入（所以本技能输出 JSON）
+#   - configPath 相对路径按"启动进程的目录"解析
+
+- name: '@deepseek-ai/dsh-hooks-claude-code'
+  config:
+    configPath: ./.claude/hooks.json
