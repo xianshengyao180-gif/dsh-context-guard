@@ -1,0 +1,9 @@
+{
+  "contextWindow": null,
+  "warnAt": 0.7,
+  "criticalAt": 0.9,
+  "windowFallback": 128000,
+  "handoffDir": ".agents/handoff",
+  "announceOnce": true,
+  "writeState": true
+}

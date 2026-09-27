@@ -1,0 +1,29 @@
+# 依赖 / 构建产物
+node_modules/
+dist/
+build/
+
+# 日志与临时文件
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+
+# 编辑器 / 系统垃圾
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*.swo
+
+# 本技能在真实工作区里运行时产生的产物（若你把本仓库直接当工作区用）
+.agents/handoff/
+.agents/context-guard.json
+
+# 状态文件（默认实际写在 $DSH_HOME/storages/context-guard/，这里只防误提交）
+context-guard-state.json
