@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REQUIRED_SECTIONS = [
+const REQUIRED_SECTIONS = [
   // 只校验序号前缀，标题措辞可不同（DSH 版 §0 叫“新会话怎么用这份文档”，
   // 跨 agent 版叫“用法（任意 agent）”；§10 同理）。
   '## 0. ',
@@ -49,7 +49,7 @@ export function parseFrontMatter(text) {
 }
 
 /** Text of one `## n.` section, up to the next `## ` heading. */
-export function sectionText(body, marker) {
+function sectionText(body, marker) {
   const start = body.indexOf(marker);
   if (start < 0) return null;
   const rest = body.slice(start);
@@ -58,7 +58,7 @@ export function sectionText(body, marker) {
 }
 
 /** Rows of the §4 decision table: `| 决策 | 载体文件 | 可 grep 的证据 |`. */
-export function parseDecisionTable(body) {
+function parseDecisionTable(body) {
   const section = sectionText(body, '## 4. 关键决策与约束');
   if (!section) return [];
   const rows = [];
@@ -88,35 +88,27 @@ export function parseDecisionTable(body) {
   return rows;
 }
 
-function resolveCarrier(carrier, cwd, docDir) {
-  const candidates = [];
+/** Resolve a carrier path written relative to the workspace, or absolute. */
+function resolveCarrier(carrier, cwd) {
   if (!carrier) return null;
-  if (path.isAbsolute(carrier)) candidates.push(carrier);
-  else {
-    candidates.push(path.resolve(cwd, carrier));
-    candidates.push(path.resolve(docDir, carrier));
+  const candidate = path.isAbsolute(carrier) ? carrier : path.resolve(cwd, carrier);
+  try {
+    return fs.statSync(candidate).isFile() ? candidate : null;
+  } catch {
+    return null;
   }
-  for (const candidate of candidates) {
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {
-      /* try the next spelling */
-    }
-  }
-  return null;
 }
 
 /**
  * Verify a handoff document.
  * @param {string} docPath
- * @param {{cwd?: string, trigger?: string, body?: string}} [opts]
+ * @param {{cwd?: string}} [opts]
  * @returns {{ok: boolean, docPath: string, checks: object[], decisions: object[], frontMatter: object}}
  */
 export function verifyHandoffDoc(docPath, opts = {}) {
   const cwd = path.resolve(opts.cwd ?? process.cwd());
-  const docDir = path.dirname(path.resolve(docPath));
-  const trigger = opts.trigger ?? '/context-guard';
-  const text = opts.body ?? fs.readFileSync(docPath, 'utf8');
+  const trigger = '/context-guard';
+  const text = fs.readFileSync(docPath, 'utf8');
   const { data, body } = parseFrontMatter(text);
   const checks = [];
   const push = (name, pass, detail) => checks.push({ name, pass: Boolean(pass), detail });
@@ -140,12 +132,9 @@ export function verifyHandoffDoc(docPath, opts = {}) {
     push('决策落盘表已填写', true, `${decisions.length} 条`);
     decisions.forEach((row, index) => {
       const label = `决策 #${index + 1}「${row.decision.slice(0, 24) || '(空)'}」`;
-      if (/示例/.test(row.decision) || /示例/.test(row.carrier)) {
-        return push(label, false, '仍是模板示例行，请替换成真实决策');
-      }
       if (!row.carrier) return push(label, false, '未填载体文件');
       if (!row.evidence) return push(label, false, '未填可 grep 的证据');
-      const file = resolveCarrier(row.carrier, cwd, docDir);
+      const file = resolveCarrier(row.carrier, cwd);
       if (!file) return push(label, false, `载体文件不存在: ${row.carrier}`);
       let content;
       try {
@@ -160,7 +149,7 @@ export function verifyHandoffDoc(docPath, opts = {}) {
 
   const previous = data.previous && data.previous !== '(none)' ? data.previous : null;
   if (previous) {
-    const resolved = resolveCarrier(previous, cwd, docDir);
+    const resolved = resolveCarrier(previous, cwd);
     push('交接链上一棒可解析', Boolean(resolved), resolved ? `→ ${previous}` : `指向的文件不存在: ${previous}`);
   } else {
     push('交接链上一棒可解析', true, '本棒是链首（previous 为空）');

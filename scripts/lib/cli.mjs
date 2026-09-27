@@ -1,5 +1,6 @@
 /**
- * Minimal flag parser shared by the context-guard CLIs.
+ * Minimal flag parser shared by the context-guard CLIs, plus the one output
+ * formatter both the CLI and the hook need.
  *
  * Exists so the two entry points cannot drift from their documented flags:
  * every accepted flag is declared here, an unknown flag is a hard error, and
@@ -58,4 +59,12 @@ export function parseFlags(argv, spec) {
     throw new UsageError(`不接受的裸参数: ${positionals.join(' ')}`, spec.usage);
   }
   return { args, positionals };
+}
+
+/** Compact token count for terminal output (one home for both callers). */
+export function fmtTokens(value) {
+  if (!Number.isFinite(value)) return 'n/a';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 2)}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(Math.round(value));
 }

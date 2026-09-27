@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UsageError, parseFlags } from './lib/cli.mjs';
+import { UsageError, fmtTokens, parseFlags } from './lib/cli.mjs';
 import { measureContext } from './lib/measure.mjs';
 import { encodeSegment, projectKey, resolveDshHome } from './lib/session-log.mjs';
 
@@ -44,13 +44,6 @@ const USAGE = `context-guard — 测量当前 DSH 会话的上下文占用
 
 退出码: 0 正常；--exit-code 时 10=warn、20=critical；用法或读取错误 2。
 `;
-
-function fmtTokens(value) {
-  if (!Number.isFinite(value)) return 'n/a';
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 2)}M`;
-  if (value >= 1000) return `${Math.round(value / 1000)}k`;
-  return String(Math.round(value));
-}
 
 function fmtThreshold(value, window) {
   return value <= 1 ? `${Math.round(value * 100)}%` : fmtTokens(value);

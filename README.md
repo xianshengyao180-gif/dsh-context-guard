@@ -131,80 +131,27 @@ node "$base\scripts\handoff.mjs" --verify --doc "<交接文档路径>"
 
 退出码 `0` 通过、`1` 不通过、`2` 用法错误——可以直接当流水线门禁（`--json` 给机器读）。
 
-真实输出：
+完整检查清单与多条真实输出在 **[README.zh.md](README.zh.md)**（§6.1 与示例 9）。
 
-```text
-交接文档自检: .agents/handoff/2026-09-27-10-24-58-cfe3d2b4.md
+## 链式接力 / 跨 agent
 
-  PASS  没有遗留 FILL 占位                ok
-  PASS  11 个章节齐全                    ok
-  PASS  §10 有可复制的开场白代码块          ok
-  PASS  决策落盘表已填写                    2 条
-  PASS  决策 #1「表面类型集合是测量的唯一入口」  已在 scripts/lib/measure.mjs 中 grep 到
-  PASS  交接链上一棒可解析                   → .agents/handoff/…-hop1.md
-  PASS  §7 有可执行步骤                   3 条
-  PASS  §9 有验证命令                    ok
+- 每份交接文档头带 `chain` / `hop` / `previous`，交接目录里的 `LATEST`（无扩展名）指向最新一棒：
+  新会话不必猜文档在哪；需要更早的来龙去脉时按 `previous` 往回走——但**只在缺信息时回读，不要通读全链**。
+- 换 agent 时 `node "$base\scripts\handoff.mjs" --portable` 写出环境无关的 `<工作区>/HANDOFF.md`
+  （剥掉 `DSH home`、会话日志路径与 DSH 专属自查命令），可直接交给 Claude Code / Codex / Cursor。
 
-结论: 通过（可以把这个开场白交给新会话）
-```
-
-## 链式接力
-
-每份交接文档头部写着自己的位置：
-
-```yaml
----
-kind: context-guard-handoff
-chain: session-cfe3d2b4-…     # 同一条链的稳定 id
-hop: 2                        # 第几棒
-previous: .agents/handoff/2026-…-cfe3d2b4.md
-created: 2026-09-27 10:24:58
----
-```
-
-配合交接目录里的 `LATEST`（无扩展名的稳定指针，指向最新一棒）：
-新会话**不必猜**文档在哪；需要更早的来龙去脉时按 `previous` 往回走，但协议明确要求
-**只在缺信息时回读、不要通读全链**（通读全链等于把省下的上下文又烧回去）。
-
-## 跨 agent 交接
-
-换 agent（Claude Code / Codex / Cursor）时：
-
-```powershell
-node "$base\scripts\handoff.mjs" --portable     # 默认写 <工作区>/HANDOFF.md
-```
-
-它把同一份交接转成**环境无关**的版本：剥掉 DSH 专属的 `DSH home` / 会话日志路径 / 自查命令，
-换成中性说明，并给出任何 agent 都能照做的开场白：
-
-```text
-读 HANDOFF.md，接着上一个会话的工作：<标题>
-先看 §1 目标、§7 下一步、§8 环境事实，然后从 §7 第 1 条开始动手。
-§3/§5 里已完成的工作不要重做；§6 里失败过的做法不要重复；完成后按 §9 的验证命令自检。
-需要更早的来龙去脉时，按文件头部 `previous` 指针沿交接链回读，不要通读全链。
-```
+指针格式与实测输出见 **[README.zh.md](README.zh.md)**（§6.2 §6.3 与示例 10）。
 
 ## 全自动提醒（hook，可选）
 
-`hooks/dsh-context-guard-hook.mjs` 把"提醒"从**靠模型自觉**变成**确定性注入**：
+`hooks/` 一个脚本服务两个事件：`SessionStart` 注入「当前占用 + 最新交接指针 + 续接须知」，
+`UserPromptSubmit` **只在等级新越线时**提醒；其它事件、坏 JSON、测不到会话一律安静退出 0。
 
-| 事件 | 行为 |
-| --- | --- |
-| `SessionStart` | 注入「当前占用 + 最新交接文档指针 + 续接须知」，新会话开口前就知道自己在哪 |
-| `UserPromptSubmit` | **只在等级新越线时**注入提醒块；平时完全静默 |
-| 其它事件 / 坏 JSON / 测不到会话 | 一律安静退出 0——绝不影响会话 |
+⚠️ **默认不会生效**：DSH 组合没有挂载 Claude-Code 兼容的 hook 桥。启用＝把
+`@deepseek-ai/dsh-hooks-claude-code` 挂进组合并指向 `hooks/hooks.example.json`（片段见
+`hooks/cordis-snippet.yml`），然后重启 DSH。没挂载时技能照协议 A 的自觉检查工作，两者不冲突。
 
-⚠️ **默认不会生效**：DSH 的 Web 组合没有挂载 Claude-Code 兼容的 hook 桥。启用需要两步（见
-`hooks/cordis-snippet.yml` 与 `hooks/hooks.example.json`）：
-
-```yaml
-# 组合配置里加一行，然后重启 DSH
-- name: '@deepseek-ai/dsh-hooks-claude-code'
-  config:
-    configPath: ./.claude/hooks.json
-```
-
-没挂载时技能照协议 A 工作，两者不冲突。
+四种场景的实测行为见 **[README.zh.md](README.zh.md)** §6.4。
 
 ## 目录结构
 

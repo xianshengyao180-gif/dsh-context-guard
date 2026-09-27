@@ -26,7 +26,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, measureContext } from '../scripts/lib/measure.mjs';
+import { fmtTokens } from '../scripts/lib/cli.mjs';
+import { latestHandoffDoc } from '../scripts/lib/handoff-dir.mjs';
+import { measureContext } from '../scripts/lib/measure.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(HERE, '..');
@@ -40,39 +42,9 @@ function readStdin() {
   }
 }
 
-function fmtTokens(value) {
-  if (!Number.isFinite(value)) return 'n/a';
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-  if (value >= 1000) return `${Math.round(value / 1000)}k`;
-  return String(Math.round(value));
-}
-
-/** Latest handoff document for a workspace, via the stable LATEST pointer. */
+/** Latest handoff document for a workspace (pointer first, scan as fallback). */
 function latestHandoff(cwd) {
-  const { config } = loadConfig({ skillDir: SKILL_DIR, cwd });
-  const dir = path.isAbsolute(config.handoffDir) ? config.handoffDir : path.join(cwd, config.handoffDir);
-  const pointer = path.join(dir, 'LATEST');
-  let name = null;
-  try {
-    name = fs.readFileSync(pointer, 'utf8').split(/\r?\n/)[0].trim() || null;
-  } catch {
-    name = null;
-  }
-  if (name && fs.existsSync(path.join(dir, name))) {
-    return path.join(dir, name).replace(/\\/g, '/');
-  }
-  // No pointer: fall back to the newest *.md sitting in the handoff directory.
-  try {
-    const docs = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
-      .sort((a, b) => a.t - b.t);
-    if (docs.length) return path.join(dir, docs[docs.length - 1].f).replace(/\\/g, '/');
-  } catch {
-    /* no handoff at all */
-  }
-  return null;
+  return latestHandoffDoc(cwd, { skillDir: SKILL_DIR });
 }
 
 function emit(event, context) {
